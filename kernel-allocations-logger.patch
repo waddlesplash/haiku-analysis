@@ -1,0 +1,62 @@
+diff --git a/src/system/kernel/elf.cpp b/src/system/kernel/elf.cpp
+index 0883e523e3..e798ef1aa9 100644
+--- a/src/system/kernel/elf.cpp
++++ b/src/system/kernel/elf.cpp
+@@ -178,8 +178,8 @@ static struct elf_image_info *
+ find_image_at_address(addr_t address)
+ {
+ #if KDEBUG
+-	if (!debug_debugger_running())
+-		ASSERT_LOCKED_MUTEX(&sImageMutex);
++//	if (!debug_debugger_running())
++//		ASSERT_LOCKED_MUTEX(&sImageMutex);
+ #endif
+ 
+ 	ImageHash::Iterator iterator(sImagesHash);
+diff --git a/src/system/kernel/slab/allocator.cpp b/src/system/kernel/slab/allocator.cpp
+index 97460b3ce1..dc5651a166 100644
+--- a/src/system/kernel/slab/allocator.cpp
++++ b/src/system/kernel/slab/allocator.cpp
+@@ -18,6 +18,7 @@
+ #include <malloc.h>
+ #include <vm/vm.h>
+ #include <vm/VMAddressSpace.h>
++#include <elf.h>
+ 
+ #include "ObjectCache.h"
+ #include "MemoryManager.h"
+@@ -239,13 +240,34 @@ free_etc(void *address, uint32 flags)
+ void*
+ malloc(size_t size)
+ {
++#if 0
++	const char* symbolName = NULL, *imageName = NULL;
++	elf_debug_lookup_symbol_address((addr_t)__builtin_return_address(0), NULL,
++		&symbolName, &imageName, NULL);
++
++	void* alloc = block_alloc(size, 0, 0);
++	if (symbolName
++		&& strcmp(symbolName, "writev_port_etc")
++		&& system_time() > 1000*1000*10
++		)
++		dprintf("allocator:malloc(%" B_PRIuSIZE ") -> %p by <%s>%s\n", size, alloc, imageName, symbolName);
++	return alloc;
++#else
+ 	return block_alloc(size, 0, 0);
++#endif
+ }
+ 
+ 
+ void
+ free(void* address)
+ {
++#if 0
++	const char* symbolName = NULL, *imageName = NULL;
++	elf_debug_lookup_symbol_address((addr_t)__builtin_return_address(0), NULL,
++		&symbolName, &imageName, NULL);
++	if (symbolName)
++	dprintf("allocator:free(%p) by <%s>%s\n", address, imageName, symbolName);
++#endif
+ 	block_free(address, 0);
+ }
+ 
