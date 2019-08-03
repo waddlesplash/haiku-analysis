@@ -1,0 +1,19 @@
+diff --git a/headers/os/support/SupportDefs.h b/headers/os/support/SupportDefs.h
+index f2533bb89e..7f193dc54c 100644
+--- a/headers/os/support/SupportDefs.h
++++ b/headers/os/support/SupportDefs.h
+@@ -50,7 +50,14 @@ typedef unsigned char			uchar;
+ typedef unsigned short			unichar;
+ 
+ /* descriptive types */
++#ifdef __clang__
++#define status_t				__attribute__((warn_unused_result)) int32
++#pragma clang diagnostic error "-Wunused-result"
++#pragma clang diagnostic ignored "-Wignored-attributes"
++#else
+ typedef int32					status_t;
++#endif
++
+ typedef int64					bigtime_t;
+ typedef int64					nanotime_t;
+ typedef uint32					type_code;
