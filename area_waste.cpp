@@ -9,13 +9,19 @@
 #include <stdio.h>
 #include <string.h>
 
-int main()
+int main(int argc, char** argv)
 {
 	std::vector<area_info> infos;
+
+	team_id team = -1;
+	if (argc > 1)
+		team = atoi(argv[1]);
 
 	int32 teamCookie = 0;
 	team_info tinfo;
 	while (get_next_team_info(&teamCookie, &tinfo) >= B_OK) {
+		if (team != -1 && tinfo.team != team)
+			continue;
 		ssize_t cookie = 0;
 		area_info info;
 		while (get_next_area_info(tinfo.team, &cookie, &info) == B_OK) {
