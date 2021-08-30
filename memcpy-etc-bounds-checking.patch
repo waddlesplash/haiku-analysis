@@ -1,0 +1,106 @@
+diff --git a/headers/posix/string.h b/headers/posix/string.h
+index 6f19108379..47dbe8dfd1 100644
+--- a/headers/posix/string.h
++++ b/headers/posix/string.h
+@@ -26,6 +26,57 @@ extern void		*memset(void *dest, int value, size_t length);
+ extern void		*memrchr(const void *source, int value, size_t length);
+ #endif
+ 
++#if !defined(_BOOT_MODE) /* bounds checking */
++#if defined(_KERNEL_MODE)
++extern void			panic(const char *format, ...) _PRINTFLIKE(1, 2);
++#else
++extern int		snprintf(char *string, size_t size, char const *format, ...) _PRINTFLIKE(3,4);
++extern void debugger(const char *message);
++#endif
++
++void __compiler_memory_overrun(void) __attribute__((__error__("compiler-detected memory overrun")));
++
++static inline void
++__memory_overrun(const char* function, int line, size_t real_size, size_t attempted_size)
++{
++#ifdef _KERNEL_MODE
++	panic("memory overrun: %lu < %lu, in %s:%d", real_size, attempted_size, function, line);
++#else
++	char buffer[2048];
++	snprintf(buffer, sizeof(buffer), "memory overrun: %lu < %lu, in %s:%d", real_size, attempted_size, function, line);
++	debugger(buffer);
++#endif
++}
++
++#define DEFINE_BOUNDS_CHECKED(FUNC, RET_TYPE, ARG1_TYPE, ARG2_TYPE) \
++static inline RET_TYPE \
++__boundschecked_##FUNC(const char* function, int line, ARG1_TYPE ARG1, ARG2_TYPE ARG2, size_t ARG1_LENGTH) \
++{ \
++	size_t arg1_size = __builtin_object_size(ARG1, 0); \
++	if (__builtin_constant_p(ARG1_LENGTH) && arg1_size < ARG1_LENGTH) \
++	    __compiler_memory_overrun(); \
++\
++	if (arg1_size < ARG1_LENGTH) \
++	    __memory_overrun(function, line, arg1_size, ARG1_LENGTH); \
++	return FUNC(ARG1, ARG2, ARG1_LENGTH); \
++}
++
++DEFINE_BOUNDS_CHECKED(memchr, void*, const void*, int)
++DEFINE_BOUNDS_CHECKED(memcmp, int, const void*, const void*)
++DEFINE_BOUNDS_CHECKED(memcpy, void*, void*, const void*)
++DEFINE_BOUNDS_CHECKED(memmove, void*, void*, const void*)
++DEFINE_BOUNDS_CHECKED(memset, void*, void*, int)
++
++#undef DEFINE_BOUNDS_CHECKED
++
++#define __BOUNDS_CHECKED(FUNC, ARGS...) __boundschecked_##FUNC(__func__, __LINE__, ARGS)
++#define memchr(ARGS...) __BOUNDS_CHECKED(memchr, ARGS)
++#define memcmp(ARGS...) __BOUNDS_CHECKED(memcmp, ARGS)
++#define memcpy(ARGS...) __BOUNDS_CHECKED(memcpy, ARGS)
++#define memmove(ARGS...) __BOUNDS_CHECKED(memmove, ARGS)
++#define memset(ARGS...) __BOUNDS_CHECKED(memset, ARGS)
++#endif
++
+ /* string functions */
+ extern char		*strcpy(char *dest, const char *source);
+ extern char		*strncpy(char *dest, const char *source, size_t length);
+diff --git a/src/system/libroot/posix/string/memchr.c b/src/system/libroot/posix/string/memchr.c
+index 442b026556..24ee71d4af 100644
+--- a/src/system/libroot/posix/string/memchr.c
++++ b/src/system/libroot/posix/string/memchr.c
+@@ -1,4 +1,4 @@
+-/* 
++/*
+ ** Copyright 2001, Manuel J. Petit. All rights reserved.
+ ** Distributed under the terms of the NewOS License.
+ */
+@@ -6,6 +6,8 @@
+ #include <sys/types.h>
+ #include <string.h>
+ 
++#undef memchr
++
+ 
+ void *
+ memchr(void const *buf, int c, size_t len)
+diff --git a/src/system/libroot/posix/string/memcmp.c b/src/system/libroot/posix/string/memcmp.c
+index f5034c0beb..b26a9f94f9 100644
+--- a/src/system/libroot/posix/string/memcmp.c
++++ b/src/system/libroot/posix/string/memcmp.c
+@@ -7,6 +7,8 @@
+ #include <string.h>
+ 
+ 
++#undef memcmp
++
+ int
+ memcmp(const void *_a, const void *_b, size_t count)
+ {
+diff --git a/src/system/libroot/posix/string/memmove.c b/src/system/libroot/posix/string/memmove.c
+index 0fe136336d..5652589982 100644
+--- a/src/system/libroot/posix/string/memmove.c
++++ b/src/system/libroot/posix/string/memmove.c
+@@ -13,6 +13,7 @@ typedef int word;
+ 
+ #define lsize sizeof(word)
+ #define lmask (lsize - 1)
++#undef memmove
+ 
+ 
+ void*
