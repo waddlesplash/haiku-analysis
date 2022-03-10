@@ -1,8 +1,8 @@
 diff --git a/src/system/kernel/elf.cpp b/src/system/kernel/elf.cpp
-index 0883e523e3..e798ef1aa9 100644
+index 1699b9f1a7..690b102c43 100644
 --- a/src/system/kernel/elf.cpp
 +++ b/src/system/kernel/elf.cpp
-@@ -178,8 +178,8 @@ static struct elf_image_info *
+@@ -179,8 +179,8 @@ static struct elf_image_info *
  find_image_at_address(addr_t address)
  {
  #if KDEBUG
@@ -13,8 +13,30 @@ index 0883e523e3..e798ef1aa9 100644
  #endif
  
  	ImageHash::Iterator iterator(sImagesHash);
+diff --git a/src/system/kernel/heap.cpp b/src/system/kernel/heap.cpp
+index bf3dec6d73..8c0b777415 100644
+--- a/src/system/kernel/heap.cpp
++++ b/src/system/kernel/heap.cpp
+@@ -2479,17 +2479,6 @@ realloc(void *address, size_t newSize)
+ #endif	// USE_DEBUG_HEAP_FOR_MALLOC
+ 
+ 
+-void *
+-calloc(size_t numElements, size_t size)
+-{
+-	void *address = memalign(0, numElements * size);
+-	if (address != NULL)
+-		memset(address, 0, numElements * size);
+-
+-	return address;
+-}
+-
+-
+ void
+ deferred_free(void *block)
+ {
 diff --git a/src/system/kernel/slab/allocator.cpp b/src/system/kernel/slab/allocator.cpp
-index 97460b3ce1..dc5651a166 100644
+index f9f1456076..0c72c91dec 100644
 --- a/src/system/kernel/slab/allocator.cpp
 +++ b/src/system/kernel/slab/allocator.cpp
 @@ -18,6 +18,7 @@
@@ -25,38 +47,139 @@ index 97460b3ce1..dc5651a166 100644
  
  #include "ObjectCache.h"
  #include "MemoryManager.h"
-@@ -239,13 +240,34 @@ free_etc(void *address, uint32 flags)
- void*
- malloc(size_t size)
+@@ -71,7 +72,7 @@ size_to_index(size_t size)
+ 
+ 
+ static void*
+-block_alloc(size_t size, size_t alignment, uint32 flags)
++real_block_alloc(size_t size, size_t alignment, uint32 flags)
  {
-+#if 0
+ 	if (alignment > kMinObjectAlignment) {
+ 		// Make size >= alignment and a power of two. This is sufficient, since
+@@ -103,6 +104,29 @@ block_alloc(size_t size, size_t alignment, uint32 flags)
+ 	return block;
+ }
+ 
++static void*
++block_alloc(size_t size, size_t alignment, uint32 flags, void* return_address)
++{
++#if 1
 +	const char* symbolName = NULL, *imageName = NULL;
-+	elf_debug_lookup_symbol_address((addr_t)__builtin_return_address(0), NULL,
++	elf_debug_lookup_symbol_address((addr_t)return_address, NULL,
 +		&symbolName, &imageName, NULL);
 +
-+	void* alloc = block_alloc(size, 0, 0);
++	void* alloc = real_block_alloc(size, alignment, flags);
 +	if (symbolName
-+		&& strcmp(symbolName, "writev_port_etc")
-+		&& system_time() > 1000*1000*10
++		//&& strcmp(symbolName, "writev_port_etc") != 0
++		//&& strstr(symbolName, "KMessage") == NULL
++		//&& strcmp(imageName, "usb") != 0
++		//&& strcmp(imageName, "xhci") != 0
++		//&& system_time() > 1000*1000*100
 +		)
 +		dprintf("allocator:malloc(%" B_PRIuSIZE ") -> %p by <%s>%s\n", size, alloc, imageName, symbolName);
 +	return alloc;
 +#else
- 	return block_alloc(size, 0, 0);
++	return real_block_alloc(size, alignment, flags);
 +#endif
- }
++}
++
  
+ void*
+ block_alloc_early(size_t size)
+@@ -149,6 +173,16 @@ block_free(void* block, uint32 flags)
+ 	if (block == NULL)
+ 		return;
  
- void
- free(void* address)
- {
-+#if 0
++#if 1
 +	const char* symbolName = NULL, *imageName = NULL;
 +	elf_debug_lookup_symbol_address((addr_t)__builtin_return_address(0), NULL,
 +		&symbolName, &imageName, NULL);
-+	if (symbolName)
-+	dprintf("allocator:free(%p) by <%s>%s\n", address, imageName, symbolName);
++	if (symbolName
++		//&& system_time() > 1000*1000*100
++		)
++		dprintf("allocator:free(%p) by <%s>%s\n", block, imageName, symbolName);
 +#endif
- 	block_free(address, 0);
++
+ 	ObjectCache* cache = MemoryManager::FreeRawOrReturnCache(block, flags);
+ 	if (cache != NULL) {
+ 		// a regular small allocation
+@@ -208,14 +242,14 @@ block_allocator_init_rest()
+ void*
+ memalign(size_t alignment, size_t size)
+ {
+-	return block_alloc(size, alignment, 0);
++	return block_alloc(size, alignment, 0, __builtin_return_address(0));
  }
+ 
+ 
+ void *
+ memalign_etc(size_t alignment, size_t size, uint32 flags)
+ {
+-	return block_alloc(size, alignment, flags & CACHE_ALLOC_FLAGS);
++	return block_alloc(size, alignment, flags & CACHE_ALLOC_FLAGS, __builtin_return_address(0));
+ }
+ 
+ 
+@@ -224,7 +258,7 @@ posix_memalign(void** _pointer, size_t alignment, size_t size)
+ {
+ 	if ((alignment & (sizeof(void*) - 1)) != 0 || _pointer == NULL)
+ 		return B_BAD_VALUE;
+-	*_pointer = block_alloc(size, alignment, 0);
++	*_pointer = block_alloc(size, alignment, 0, __builtin_return_address(0));
+ 	return 0;
+ }
+ 
+@@ -235,7 +269,7 @@ aligned_alloc(size_t alignment, size_t size)
+ 	if ((size % alignment) != 0)
+ 		return NULL;
+ 
+-	return memalign(alignment, size);
++	return block_alloc(size, alignment, 0, __builtin_return_address(0));
+ }
+ 
+ 
+@@ -254,7 +288,7 @@ free_etc(void *address, uint32 flags)
+ void*
+ malloc(size_t size)
+ {
+-	return block_alloc(size, 0, 0);
++	return block_alloc(size, 0, 0, __builtin_return_address(0));
+ }
+ 
+ 
+@@ -274,7 +308,7 @@ realloc(void* address, size_t newSize)
+ 	}
+ 
+ 	if (address == NULL)
+-		return block_alloc(newSize, 0, 0);
++		return block_alloc(newSize, 0, 0, __builtin_return_address(0));
+ 
+ 	size_t oldSize;
+ 	ObjectCache* cache = MemoryManager::GetAllocationInfo(address, oldSize);
+@@ -286,7 +320,7 @@ realloc(void* address, size_t newSize)
+ 	if (oldSize == newSize)
+ 		return address;
+ 
+-	void* newBlock = block_alloc(newSize, 0, 0);
++	void* newBlock = block_alloc(newSize, 0, 0, __builtin_return_address(0));
+ 	if (newBlock == NULL)
+ 		return NULL;
+ 
+@@ -298,6 +332,17 @@ realloc(void* address, size_t newSize)
+ }
+ 
+ 
++void *
++calloc(size_t numElements, size_t size)
++{
++	void *address = block_alloc(numElements * size, 0, 0, __builtin_return_address(0));
++	if (address != NULL)
++		memset(address, 0, numElements * size);
++
++	return address;
++}
++
++
+ #endif	// USE_SLAB_ALLOCATOR_FOR_MALLOC
+ 
  
