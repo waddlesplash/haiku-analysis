@@ -1,21 +1,23 @@
-From 72fa3cfd6b60f4e67b5e099d4d76203b3f3057ec Mon Sep 17 00:00:00 2001
+From debb00cbb05f3698ed4dd33d816ff04df8a38dfb Mon Sep 17 00:00:00 2001
 From: Augustin Cavalier <waddlesplash@gmail.com>
-Date: Wed, 30 Nov 2022 19:54:50 -0500
+Date: Mon, 27 Feb 2023 21:20:58 -0500
 Subject: [PATCH] DoublyLinkedList: Assertions for duplicate insertion, missed
  removal, deletion while in a list, etc.
 
 Required some hacks elsewhere in the kernel to make this bootable.
 ---
  .../private/kernel/util/DoublyLinkedList.h    | 72 +++++++++++++++----
+ .../kernel/bluetooth/btCoreData/Jamfile       |  1 +
  src/add-ons/kernel/drivers/tty/tty.cpp        |  5 +-
  .../kernel/network/stack/net_buffer.cpp       |  4 ++
  src/system/kernel/cache/block_cache.cpp       |  2 +-
  .../kernel/device_manager/dma_resources.cpp   |  4 ++
  src/system/kernel/port.cpp                    |  2 +-
+ src/system/kernel/slab/MemoryManager.cpp      |  1 +
  src/system/kernel/slab/ObjectCache.cpp        |  4 ++
  src/system/kernel/util/list.cpp               |  4 +-
  src/system/kernel/vm/VMKernelArea.h           |  5 ++
- 9 files changed, 83 insertions(+), 19 deletions(-)
+ 11 files changed, 85 insertions(+), 19 deletions(-)
 
 diff --git a/headers/private/kernel/util/DoublyLinkedList.h b/headers/private/kernel/util/DoublyLinkedList.h
 index ce6845e3e2..086c3981ee 100644
@@ -192,6 +194,17 @@ index ce6845e3e2..086c3981ee 100644
  	fFirst = NULL;
  	fLast = NULL;
  }
+diff --git a/src/add-ons/kernel/bluetooth/btCoreData/Jamfile b/src/add-ons/kernel/bluetooth/btCoreData/Jamfile
+index 62c839977e..d718acf050 100644
+--- a/src/add-ons/kernel/bluetooth/btCoreData/Jamfile
++++ b/src/add-ons/kernel/bluetooth/btCoreData/Jamfile
+@@ -1,5 +1,6 @@
+ SubDir HAIKU_TOP src add-ons kernel bluetooth btCoreData ;
+ 
++UsePrivateKernelHeaders ;
+ UsePrivateHeaders kernel net bluetooth ;
+ UsePrivateHeaders [ FDirName kernel arch $(TARGET_KERNEL_ARCH_DIR) ] ;
+ #UsePrivateHeaders [ FDirName kernel boot platform $(TARGET_KERNEL_PLATFORM) ] ;
 diff --git a/src/add-ons/kernel/drivers/tty/tty.cpp b/src/add-ons/kernel/drivers/tty/tty.cpp
 index edbd1da49d..de2c860fe5 100644
 --- a/src/add-ons/kernel/drivers/tty/tty.cpp
@@ -271,6 +284,18 @@ index cacc36a330..c698819abf 100644
  		if (message != NULL) {
  			message->code = code;
  			message->size = bufferSize;
+diff --git a/src/system/kernel/slab/MemoryManager.cpp b/src/system/kernel/slab/MemoryManager.cpp
+index 35e68c4ba5..76ff3ff385 100644
+--- a/src/system/kernel/slab/MemoryManager.cpp
++++ b/src/system/kernel/slab/MemoryManager.cpp
+@@ -1351,6 +1351,7 @@ MemoryManager::_AllocateArea(uint32 flags, Area*& _area)
+ 	}
+ 
+ 	// init the area structure
++	new(area) Area;
+ 	area->vmArea = vmArea;
+ 	area->reserved_memory_for_mapping = pagesNeededToMap * B_PAGE_SIZE;
+ 	area->usedMetaChunkCount = 0;
 diff --git a/src/system/kernel/slab/ObjectCache.cpp b/src/system/kernel/slab/ObjectCache.cpp
 index 1b60e9c2a0..7355b6bb66 100644
 --- a/src/system/kernel/slab/ObjectCache.cpp
@@ -322,5 +347,5 @@ index 0f64bdbf6d..686b2c2238 100644
  
  public:
 -- 
-2.25.1
+2.37.3
 
