@@ -1,0 +1,100 @@
+diff --git a/headers/private/kernel/lock.h b/headers/private/kernel/lock.h
+index 6c8bd5f023..b242617336 100644
+--- a/headers/private/kernel/lock.h
++++ b/headers/private/kernel/lock.h
+@@ -27,6 +27,7 @@ typedef struct mutex {
+ #else
+ 	int32					count;
+ #endif
++	bigtime_t				wait_time;
+ 	uint8					flags;
+ } mutex;
+ 
+@@ -99,7 +100,7 @@ typedef struct rw_lock {
+ // static initializers
+ #if KDEBUG
+ #	define MUTEX_INITIALIZER(name) \
+-	{ name, NULL, B_SPINLOCK_INITIALIZER, -1, 0 }
++	{ name, NULL, B_SPINLOCK_INITIALIZER, -1, 0, 0 }
+ #	define RECURSIVE_LOCK_INITIALIZER(name)	{ MUTEX_INITIALIZER(name), 0 }
+ #else
+ #	define MUTEX_INITIALIZER(name) \
+diff --git a/src/system/kernel/locks/lock.cpp b/src/system/kernel/locks/lock.cpp
+index 8f29f05bcf..d2e3bebf56 100644
+--- a/src/system/kernel/locks/lock.cpp
++++ b/src/system/kernel/locks/lock.cpp
+@@ -31,6 +31,7 @@ struct mutex_waiter {
+ 	Thread*			thread;
+ 	mutex_waiter*	next;		// next in queue
+ 	mutex_waiter*	last;		// last in queue (valid for the first in queue)
++	bigtime_t		start;
+ };
+ 
+ struct rw_lock_waiter {
+@@ -844,6 +845,7 @@ mutex_init_etc(mutex* lock, const char *name, uint32 flags)
+ #else
+ 	lock->count = 0;
+ #endif
++	lock->wait_time = 0;
+ 	lock->flags = flags & MUTEX_FLAG_CLONE_NAME;
+ 
+ 	T_SCHEDULING_ANALYSIS(InitMutex(lock, name));
+@@ -983,8 +985,23 @@ _mutex_lock(mutex* lock, void* _locker)
+ 	} else if (lock->holder == thread_get_current_thread_id()) {
+ 		panic("_mutex_lock(): double lock of %p by thread %" B_PRId32, lock,
+ 			lock->holder);
+-	} else if (lock->holder == 0)
++	} else if (lock->holder == 0) {
+ 		panic("_mutex_lock(): using uninitialized lock %p", lock);
++	}
++
++#if KDEBUG_DETECT_MUTEX_DEADLOCKS
++	Thread* thread = Thread::Get(lock->holder);
++	if (thread != NULL) {
++		if (thread_is_blocked(thread) && thread->wait.type == THREAD_BLOCK_TYPE_MUTEX) {
++			const mutex* otherMutex = reinterpret_cast<const mutex*>(thread->wait.object);
++			if (otherMutex->holder == thread_get_current_thread_id()) {
++				panic("_mutex_lock() deadlock: attempted lock of %p, but holder is waiting on %p",
++					lock, otherMutex);
++			}
++		}
++		thread->ReleaseReference();
++	}
++#endif
+ #else
+ 	if ((lock->flags & MUTEX_FLAG_RELEASED) != 0) {
+ 		lock->flags &= ~MUTEX_FLAG_RELEASED;
+@@ -994,6 +1011,7 @@ _mutex_lock(mutex* lock, void* _locker)
+ 
+ 	// enqueue in waiter list
+ 	mutex_waiter waiter;
++	waiter.start = system_time();
+ 	waiter.thread = thread_get_current_thread();
+ 	waiter.next = NULL;
+ 
+@@ -1047,6 +1065,17 @@ _mutex_unlock(mutex* lock)
+ 		lock->holder = waiter->thread->id;
+ #endif
+ 
++#if 0
++		bigtime_t waited = system_time() - waiter->start;
++		if (waited > 1*1000*1000)
++			panic("thread %d waited on mutex %p for over one second", waiter->thread->id, lock);
++		lock->wait_time += waited;
++		if (lock->wait_time > 10*1000*1000) {
++			panic("mutex %p cumulative wait over 10 seconds", lock);
++			lock->wait_time = 0;
++		}
++#endif
++
+ 		// unblock thread
+ 		thread_unblock(waiter->thread, B_OK);
+ 	} else {
+@@ -1110,6 +1139,7 @@ _mutex_lock_with_timeout(mutex* lock, uint32 timeoutFlags, bigtime_t timeout)
+ 
+ 	// enqueue in waiter list
+ 	mutex_waiter waiter;
++	waiter.start = system_time();
+ 	waiter.thread = thread_get_current_thread();
+ 	waiter.next = NULL;
+ 
