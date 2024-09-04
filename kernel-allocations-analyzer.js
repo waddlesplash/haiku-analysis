@@ -47,6 +47,7 @@ for (var i in lines) {
 function print(points, by_total) {
 	console.log("\tsize\tcount");
 
+	var total = 0;
 	var sorted = Object.keys(points).sort(function(a, b) {
 		a = points[a];
 		b = points[b];
@@ -65,10 +66,13 @@ function print(points, by_total) {
 		for (var j in pnt) {
 			if (pnt[j] == 0)
 				continue;
+			total += parseInt(j) * parseInt(pnt[j]);
 			console.log("\t" + j + "\t" + pnt[j]);
 		}
 	}
+
+	console.log("\ntotal: " + total);
 }
 
 //print(allocation_points_total, false);
-print(allocation_points_live, false);
+print(allocation_points_live, true);
