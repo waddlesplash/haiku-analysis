@@ -1,5 +1,5 @@
 diff --git a/headers/private/kernel/lock.h b/headers/private/kernel/lock.h
-index 6c8bd5f023..b242617336 100644
+index 05a4a4f77a..daeb9c55cf 100644
 --- a/headers/private/kernel/lock.h
 +++ b/headers/private/kernel/lock.h
 @@ -27,6 +27,7 @@ typedef struct mutex {
@@ -20,10 +20,10 @@ index 6c8bd5f023..b242617336 100644
  #else
  #	define MUTEX_INITIALIZER(name) \
 diff --git a/src/system/kernel/locks/lock.cpp b/src/system/kernel/locks/lock.cpp
-index 8f29f05bcf..d2e3bebf56 100644
+index 067b73d08b..fb08865137 100644
 --- a/src/system/kernel/locks/lock.cpp
 +++ b/src/system/kernel/locks/lock.cpp
-@@ -31,6 +31,7 @@ struct mutex_waiter {
+@@ -39,6 +39,7 @@ struct mutex_waiter {
  	Thread*			thread;
  	mutex_waiter*	next;		// next in queue
  	mutex_waiter*	last;		// last in queue (valid for the first in queue)
@@ -31,7 +31,7 @@ index 8f29f05bcf..d2e3bebf56 100644
  };
  
  struct rw_lock_waiter {
-@@ -844,6 +845,7 @@ mutex_init_etc(mutex* lock, const char *name, uint32 flags)
+@@ -861,6 +862,7 @@ mutex_init_etc(mutex* lock, const char *name, uint32 flags)
  #else
  	lock->count = 0;
  #endif
@@ -39,16 +39,12 @@ index 8f29f05bcf..d2e3bebf56 100644
  	lock->flags = flags & MUTEX_FLAG_CLONE_NAME;
  
  	T_SCHEDULING_ANALYSIS(InitMutex(lock, name));
-@@ -983,8 +985,23 @@ _mutex_lock(mutex* lock, void* _locker)
- 	} else if (lock->holder == thread_get_current_thread_id()) {
- 		panic("_mutex_lock(): double lock of %p by thread %" B_PRId32, lock,
- 			lock->holder);
--	} else if (lock->holder == 0)
-+	} else if (lock->holder == 0) {
+@@ -1003,6 +1005,20 @@ _mutex_lock(mutex* lock, void* _locker)
+ 	} else if (lock->holder == 0) {
  		panic("_mutex_lock(): using uninitialized lock %p", lock);
-+	}
+ 	}
 +
-+#if KDEBUG_DETECT_MUTEX_DEADLOCKS
++#	if KDEBUG_DETECT_MUTEX_DEADLOCKS
 +	Thread* thread = Thread::Get(lock->holder);
 +	if (thread != NULL) {
 +		if (thread_is_blocked(thread) && thread->wait.type == THREAD_BLOCK_TYPE_MUTEX) {
@@ -60,11 +56,11 @@ index 8f29f05bcf..d2e3bebf56 100644
 +		}
 +		thread->ReleaseReference();
 +	}
-+#endif
++#	endif
  #else
  	if ((lock->flags & MUTEX_FLAG_RELEASED) != 0) {
  		lock->flags &= ~MUTEX_FLAG_RELEASED;
-@@ -994,6 +1011,7 @@ _mutex_lock(mutex* lock, void* _locker)
+@@ -1012,6 +1028,7 @@ _mutex_lock(mutex* lock, void* _locker)
  
  	// enqueue in waiter list
  	mutex_waiter waiter;
@@ -72,7 +68,7 @@ index 8f29f05bcf..d2e3bebf56 100644
  	waiter.thread = thread_get_current_thread();
  	waiter.next = NULL;
  
-@@ -1047,6 +1065,17 @@ _mutex_unlock(mutex* lock)
+@@ -1068,6 +1085,17 @@ _mutex_unlock(mutex* lock)
  		lock->holder = waiter->thread->id;
  #endif
  
@@ -90,11 +86,29 @@ index 8f29f05bcf..d2e3bebf56 100644
  		// unblock thread
  		thread_unblock(waiter->thread, B_OK);
  	} else {
-@@ -1110,6 +1139,7 @@ _mutex_lock_with_timeout(mutex* lock, uint32 timeoutFlags, bigtime_t timeout)
+@@ -1114,6 +1142,7 @@ _mutex_lock_with_timeout(mutex* lock, uint32 timeoutFlags, bigtime_t timeout)
  
  	// enqueue in waiter list
  	mutex_waiter waiter;
 +	waiter.start = system_time();
  	waiter.thread = thread_get_current_thread();
  	waiter.next = NULL;
+ 
+diff --git a/src/system/kernel/smp.cpp b/src/system/kernel/smp.cpp
+index 161ed52ff6..f5095c5b33 100644
+--- a/src/system/kernel/smp.cpp
++++ b/src/system/kernel/smp.cpp
+@@ -192,6 +192,13 @@ update_lock_contention(spinlock* lock, bigtime_t start)
+ 	const bigtime_t now = system_time();
+ 	lock->last_acquired = now;
+ 	lock->total_wait += (now - start);
++
++#if 0
++	if (lock->total_wait > 100*1000 && !debug_debugger_running()) {
++		panic("spinlock %p was waited on for 100ms\n", lock);
++		lock->total_wait=0;
++	}
++#endif
+ }
+ 
  
