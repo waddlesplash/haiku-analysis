@@ -1,5 +1,5 @@
 diff --git a/src/system/kernel/elf.cpp b/src/system/kernel/elf.cpp
-index c352a8f087..42db6b0f51 100644
+index f74be3f010..342a592b84 100644
 --- a/src/system/kernel/elf.cpp
 +++ b/src/system/kernel/elf.cpp
 @@ -179,8 +179,8 @@ static struct elf_image_info *
@@ -14,7 +14,7 @@ index c352a8f087..42db6b0f51 100644
  
  	ImageHash::Iterator iterator(sImagesHash);
 diff --git a/src/system/kernel/heap.cpp b/src/system/kernel/heap.cpp
-index 41015e6c2e..0f6db44780 100644
+index a67a41ecc4..dcd48d814a 100644
 --- a/src/system/kernel/heap.cpp
 +++ b/src/system/kernel/heap.cpp
 @@ -2486,30 +2486,6 @@ realloc(void *address, size_t newSize)
@@ -49,7 +49,7 @@ index 41015e6c2e..0f6db44780 100644
  deferred_free(void *block)
  {
 diff --git a/src/system/kernel/slab/allocator.cpp b/src/system/kernel/slab/allocator.cpp
-index 54d2fe4cd6..440d6e3162 100644
+index 4ba637501d..20c18aee2b 100644
 --- a/src/system/kernel/slab/allocator.cpp
 +++ b/src/system/kernel/slab/allocator.cpp
 @@ -18,6 +18,7 @@
@@ -60,7 +60,7 @@ index 54d2fe4cd6..440d6e3162 100644
  
  #include "ObjectCache.h"
  #include "MemoryManager.h"
-@@ -74,7 +75,7 @@ size_to_index(size_t size)
+@@ -73,7 +74,7 @@ size_to_index(size_t size)
  
  
  static void*
@@ -69,7 +69,7 @@ index 54d2fe4cd6..440d6e3162 100644
  {
  	if (alignment > kMinObjectAlignment) {
  		// Make size >= alignment and a power of two. This is sufficient, since
-@@ -106,6 +107,29 @@ block_alloc(size_t size, size_t alignment, uint32 flags)
+@@ -105,6 +106,30 @@ block_alloc(size_t size, size_t alignment, uint32 flags)
  	return block;
  }
  
@@ -83,11 +83,12 @@ index 54d2fe4cd6..440d6e3162 100644
 +
 +	void* alloc = real_block_alloc(size, alignment, flags);
 +	if (symbolName
-+		//&& strcmp(symbolName, "writev_port_etc") != 0
-+		//&& strstr(symbolName, "KMessage") == NULL
-+		//&& strcmp(imageName, "usb") != 0
-+		//&& strcmp(imageName, "xhci") != 0
-+		//&& system_time() > 1000*1000*100
++		//&& system_time() > 1000*1000*30
++		//&& size > 80 && size <= 96
++		&& strstr(symbolName, "_port_") == NULL
++		&& strstr(symbolName, "KMessage") == NULL
++		&& strcmp(imageName, "usb") != 0
++		&& strcmp(imageName, "xhci") != 0
 +		)
 +		dprintf("allocator:malloc(%" B_PRIuSIZE ") -> %p by <%s>%s\n", size, alloc, imageName, symbolName);
 +	return alloc;
@@ -99,24 +100,33 @@ index 54d2fe4cd6..440d6e3162 100644
  
  void*
  block_alloc_early(size_t size)
-@@ -152,6 +176,16 @@ block_free(void* block, uint32 flags)
- 	if (block == NULL)
- 		return;
- 
+@@ -158,6 +183,25 @@ block_free(void* block, uint32 flags)
+ 		ASSERT(cache->object_size <= kBlockSizes[kNumBlockSizes - 1]);
+ 		ASSERT(cache == sBlockCaches[size_to_index(cache->object_size)]);
+ 		object_cache_free(cache, block, flags);
++
 +#if 1
++	if (true
++		//|| cache->object_size != 96
++		//|| system_time() < 1000*1000*30
++		)
++		return;
++
 +	const char* symbolName = NULL, *imageName = NULL;
 +	elf_debug_lookup_symbol_address((addr_t)__builtin_return_address(0), NULL,
 +		&symbolName, &imageName, NULL);
 +	if (symbolName
-+		//&& system_time() > 1000*1000*100
++		&& strstr(symbolName, "_port_") == NULL
++		&& strstr(symbolName, "KMessage") == NULL
++		&& strcmp(imageName, "usb") != 0
++		&& strcmp(imageName, "xhci") != 0
 +		)
 +		dprintf("allocator:free(%p) by <%s>%s\n", block, imageName, symbolName);
 +#endif
-+
- 	ObjectCache* cache = MemoryManager::FreeRawOrReturnCache(block, flags);
- 	if (cache != NULL) {
- 		// a regular small allocation
-@@ -208,14 +242,14 @@ block_allocator_init_rest()
+ 	}
+ }
+ 
+@@ -207,14 +251,14 @@ block_allocator_init_rest()
  void*
  memalign(size_t alignment, size_t size)
  {
@@ -133,7 +143,7 @@ index 54d2fe4cd6..440d6e3162 100644
  }
  
  
-@@ -224,7 +258,7 @@ posix_memalign(void** _pointer, size_t alignment, size_t size)
+@@ -223,7 +267,7 @@ posix_memalign(void** _pointer, size_t alignment, size_t size)
  {
  	if ((alignment & (sizeof(void*) - 1)) != 0 || _pointer == NULL)
  		return B_BAD_VALUE;
@@ -142,7 +152,7 @@ index 54d2fe4cd6..440d6e3162 100644
  	return 0;
  }
  
-@@ -244,7 +278,7 @@ free_etc(void *address, uint32 flags)
+@@ -243,7 +287,7 @@ free_etc(void *address, uint32 flags)
  void*
  malloc(size_t size)
  {
@@ -151,28 +161,54 @@ index 54d2fe4cd6..440d6e3162 100644
  }
  
  
-@@ -264,7 +298,7 @@ realloc_etc(void* address, size_t newSize, uint32 flags)
+@@ -254,8 +298,8 @@ free(void* address)
+ }
+ 
+ 
+-void*
+-realloc_etc(void* address, size_t newSize, uint32 flags)
++static void*
++real_realloc_etc(void* address, size_t newSize, uint32 flags, void* return_address)
+ {
+ 	if (newSize == 0) {
+ 		block_free(address, flags);
+@@ -263,7 +307,7 @@ realloc_etc(void* address, size_t newSize, uint32 flags)
  	}
  
  	if (address == NULL)
 -		return block_alloc(newSize, 0, flags);
-+		return block_alloc(newSize, 0, flags, __builtin_return_address(0));
++		return block_alloc(newSize, 0, flags, return_address);
  
  	size_t oldSize;
  	ObjectCache* cache = MemoryManager::GetAllocationInfo(address, oldSize);
-@@ -276,7 +310,7 @@ realloc_etc(void* address, size_t newSize, uint32 flags)
+@@ -275,7 +319,7 @@ realloc_etc(void* address, size_t newSize, uint32 flags)
  	if (oldSize == newSize)
  		return address;
  
 -	void* newBlock = block_alloc(newSize, 0, flags);
-+	void* newBlock = block_alloc(newSize, 0, flags, __builtin_return_address(0));
++	void* newBlock = block_alloc(newSize, 0, flags, return_address);
  	if (newBlock == NULL)
  		return NULL;
  
-@@ -295,6 +329,27 @@ realloc(void* address, size_t newSize)
+@@ -287,10 +331,38 @@ realloc_etc(void* address, size_t newSize, uint32 flags)
  }
  
  
++void*
++realloc_etc(void* address, size_t newSize, uint32 flags)
++{
++	return real_realloc_etc(address, newSize, flags, __builtin_return_address(0));
++}
++
++
+ void*
+ realloc(void* address, size_t newSize)
+ {
+-	return realloc_etc(address, newSize, 0);
++	return real_realloc_etc(address, newSize, 0, __builtin_return_address(0));
++}
++
++
 +void *
 +calloc(size_t numElements, size_t size)
 +{
@@ -191,9 +227,6 @@ index 54d2fe4cd6..440d6e3162 100644
 +		return NULL;
 +
 +	return block_alloc(size, alignment, 0, __builtin_return_address(0));
-+}
-+
-+
- #else
+ }
  
  

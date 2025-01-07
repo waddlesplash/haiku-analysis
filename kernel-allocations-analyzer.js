@@ -18,6 +18,8 @@ for (var i in lines) {
 	if (line[0] == "allocator:malloc") {
 		// [ 'allocator:malloc', '32', '', '->', '0xffffffff82022f60', 'by', '<kernel_x86_64>module_init' ]
 		const size = line[1], address = line[4], func = line[6];
+		if (func === undefined)
+			continue;
 
 		if (!(func in allocation_points_total)) {
 			allocation_points_total[func] = {};
