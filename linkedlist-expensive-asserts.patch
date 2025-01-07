@@ -1,4 +1,4 @@
-From 718f9f2b66d2763cc8947823c6ea26883380f76e Mon Sep 17 00:00:00 2001
+From 56fe641ec255b18f950e7009f31e2410ea4bce8b Mon Sep 17 00:00:00 2001
 From: Augustin Cavalier <waddlesplash@gmail.com>
 Date: Wed, 29 May 2024 16:28:56 -0400
 Subject: [PATCH] DoublyLinkedList: Assertions for duplicate insertion, missed
@@ -7,6 +7,7 @@ Subject: [PATCH] DoublyLinkedList: Assertions for duplicate insertion, missed
 Required some hacks elsewhere in the kernel to make this bootable.
 ---
  .../private/kernel/util/DoublyLinkedList.h    | 44 ++++++++++++++++---
+ headers/private/kernel/vm/vm_types.h          |  1 +
  .../kernel/network/stack/net_buffer.cpp       |  4 ++
  src/system/kernel/cache/block_cache.cpp       |  2 +-
  .../kernel/device_manager/dma_resources.cpp   |  4 ++
@@ -14,7 +15,7 @@ Required some hacks elsewhere in the kernel to make this bootable.
  src/system/kernel/slab/MemoryManager.cpp      |  1 +
  src/system/kernel/slab/ObjectCache.cpp        |  4 ++
  src/system/kernel/vm/VMKernelArea.h           |  5 +++
- 8 files changed, 59 insertions(+), 7 deletions(-)
+ 9 files changed, 60 insertions(+), 7 deletions(-)
 
 diff --git a/headers/private/kernel/util/DoublyLinkedList.h b/headers/private/kernel/util/DoublyLinkedList.h
 index 4824eb0913..60e09ff1ca 100644
@@ -133,11 +134,23 @@ index 4824eb0913..60e09ff1ca 100644
  	fFirst = NULL;
  	fLast = NULL;
  }
+diff --git a/headers/private/kernel/vm/vm_types.h b/headers/private/kernel/vm/vm_types.h
+index 138f8a144b..ddb0004483 100644
+--- a/headers/private/kernel/vm/vm_types.h
++++ b/headers/private/kernel/vm/vm_types.h
+@@ -204,6 +204,7 @@ enum {
+ inline void
+ vm_page::Init(page_num_t pageNumber)
+ {
++	new(&queue_link) DoublyLinkedListLink<vm_page>;
+ 	physical_page_number = pageNumber;
+ 	new(&mappings) vm_page_mappings();
+ 	SetCacheRef(NULL);
 diff --git a/src/add-ons/kernel/network/stack/net_buffer.cpp b/src/add-ons/kernel/network/stack/net_buffer.cpp
-index cc4ae07bbe..0fe3c38920 100644
+index 769e796b65..e1f4f4d4aa 100644
 --- a/src/add-ons/kernel/network/stack/net_buffer.cpp
 +++ b/src/add-ons/kernel/network/stack/net_buffer.cpp
-@@ -1115,6 +1115,10 @@ create_buffer(size_t headerSpace)
+@@ -1117,6 +1117,10 @@ create_buffer(size_t headerSpace)
  	list_init(&buffer->buffers);
  	list_add_item(&buffer->buffers, node);
  
@@ -149,10 +162,10 @@ index cc4ae07bbe..0fe3c38920 100644
  	buffer->stored_header_length = 0;
  
 diff --git a/src/system/kernel/cache/block_cache.cpp b/src/system/kernel/cache/block_cache.cpp
-index 232add84d6..a9e7689f32 100644
+index c85884f49c..8320b9be22 100644
 --- a/src/system/kernel/cache/block_cache.cpp
 +++ b/src/system/kernel/cache/block_cache.cpp
-@@ -1511,7 +1511,7 @@ block_cache::NewBlock(off_t blockNumber)
+@@ -1531,7 +1531,7 @@ block_cache::NewBlock(off_t blockNumber)
  		block = _GetUnusedBlock();
  	}
  	if (block == NULL) {
@@ -177,10 +190,10 @@ index 62b712218a..a7bb95eee7 100644
  
  	return buffer;
 diff --git a/src/system/kernel/port.cpp b/src/system/kernel/port.cpp
-index cacc36a330..c698819abf 100644
+index edbcb38634..c15e99148e 100644
 --- a/src/system/kernel/port.cpp
 +++ b/src/system/kernel/port.cpp
-@@ -732,7 +732,7 @@ get_port_message(int32 code, size_t bufferSize, uint32 flags, bigtime_t timeout,
+@@ -733,7 +733,7 @@ get_port_message(int32 code, size_t bufferSize, uint32 flags, bigtime_t timeout,
  		}
  
  		// Quota is fulfilled, try to allocate the buffer
@@ -217,7 +230,7 @@ index 1b60e9c2a0..7355b6bb66 100644
  	slab->count = slab->size = byteCount / object_size;
  	slab->free = NULL;
 diff --git a/src/system/kernel/vm/VMKernelArea.h b/src/system/kernel/vm/VMKernelArea.h
-index 0f64bdbf6d..686b2c2238 100644
+index 6cfa7c9b22..df7465492a 100644
 --- a/src/system/kernel/vm/VMKernelArea.h
 +++ b/src/system/kernel/vm/VMKernelArea.h
 @@ -35,8 +35,13 @@ public:
