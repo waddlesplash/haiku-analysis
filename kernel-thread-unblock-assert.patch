@@ -1,0 +1,341 @@
+From 0b7e32eec59007d4ec23dfcb1431a59291561960 Mon Sep 17 00:00:00 2001
+From: Augustin Cavalier <waddlesplash@gmail.com>
+Date: Thu, 11 Sep 2025 15:49:24 -0400
+Subject: [PATCH] kernel: Check the wait object in unblock().
+
+If we were already unblocked, then it won't be set, or will
+be set to something else.
+
+This catches "spurious" unblocks much more reliably,
+and at the source.
+---
+ headers/private/kernel/thread.h             | 13 ++++++++++---
+ src/system/kernel/condition_variable.cpp    |  4 ++--
+ src/system/kernel/debug/system_profiler.cpp |  6 +++---
+ src/system/kernel/fs/Vnode.cpp              |  6 +++---
+ src/system/kernel/fs/fifo.cpp               |  8 ++++++--
+ src/system/kernel/locks/lock.cpp            | 10 +++++-----
+ src/system/kernel/sem.cpp                   |  6 +++---
+ src/system/kernel/thread.cpp                | 10 +++++-----
+ src/system/kernel/vm/VMCache.cpp            |  2 +-
+ src/system/kernel/vm/vm_page.cpp            |  6 +++---
+ 10 files changed, 41 insertions(+), 30 deletions(-)
+
+diff --git a/headers/private/kernel/thread.h b/headers/private/kernel/thread.h
+index 6e1f03b4e7..70cf07d323 100644
+--- a/headers/private/kernel/thread.h
++++ b/headers/private/kernel/thread.h
+@@ -135,7 +135,7 @@ status_t deselect_thread(int32 object, struct select_info *info, bool kernel);
+ 
+ status_t thread_block();
+ status_t thread_block_with_timeout(uint32 timeoutFlags, bigtime_t timeout);
+-void thread_unblock(Thread* thread, status_t status);
++void thread_unblock(Thread* thread, status_t status, void* object);
+ 
+ // used in syscalls.c
+ status_t _user_set_thread_priority(thread_id thread, int32 newPriority);
+@@ -339,6 +339,7 @@ thread_prepare_to_block(Thread* thread, uint32 flags, uint32 type,
+ 
+ /*!	Unblocks the specified blocked thread.
+ 
++
+ 	If the thread is no longer waiting (e.g. because thread_unblock_locked() has
+ 	already been called in the meantime), this function does not have any
+ 	effect.
+@@ -351,8 +352,14 @@ thread_prepare_to_block(Thread* thread, uint32 flags, uint32 type,
+ 		call to thread_block_locked() will return.
+ */
+ static inline void
+-thread_unblock_locked(Thread* thread, status_t status)
++thread_unblock_locked(Thread* thread, status_t status, void* object)
+ {
++	if (object != NULL) {
++		if (thread->wait.object != object)
++			panic("thread_unblock_locked: object mismatch, thread %p, unblock object %p", thread, object);
++		thread->wait.object = NULL;
++	}
++
+ 	if (atomic_test_and_set(&thread->wait.status, status, 1) != 1)
+ 		return;
+ 
+@@ -391,7 +398,7 @@ thread_interrupt(Thread* thread, bool kill)
+ 	if (thread_is_blocked(thread)) {
+ 		if ((thread->wait.flags & B_CAN_INTERRUPT) != 0
+ 			|| (kill && (thread->wait.flags & B_KILL_CAN_INTERRUPT) != 0)) {
+-			thread_unblock_locked(thread, B_INTERRUPTED);
++			thread_unblock_locked(thread, B_INTERRUPTED, NULL);
+ 			return B_OK;
+ 		}
+ 	}
+diff --git a/src/system/kernel/condition_variable.cpp b/src/system/kernel/condition_variable.cpp
+index c97b15aa61..bd9db30c8c 100644
+--- a/src/system/kernel/condition_variable.cpp
++++ b/src/system/kernel/condition_variable.cpp
+@@ -412,7 +412,7 @@ ConditionVariable::_NotifyLocked(bool all, status_t result)
+ 			if (lastWaitStatus == STATUS_WAITING && thread->state != B_THREAD_WAITING) {
+ 				// The thread is not in B_THREAD_WAITING state, so we must unblock it early,
+ 				// in case it tries to re-block itself immediately after we unset fVariable.
+-				thread_unblock_locked(thread, result);
++				thread_unblock_locked(thread, result, this);
+ 				lastWaitStatus = result;
+ 			}
+ 
+@@ -426,7 +426,7 @@ ConditionVariable::_NotifyLocked(bool all, status_t result)
+ 			// fVariable, because otherwise it will wake up before thread_unblock returns
+ 			// and spin while waiting for us to do so.
+ 			if (lastWaitStatus == STATUS_WAITING)
+-				thread_unblock_locked(thread, result);
++				thread_unblock_locked(thread, result, this);
+ 
+ 			notified++;
+ 		}
+diff --git a/src/system/kernel/debug/system_profiler.cpp b/src/system/kernel/debug/system_profiler.cpp
+index 3e94c79263..aeeb0e3b55 100644
+--- a/src/system/kernel/debug/system_profiler.cpp
++++ b/src/system/kernel/debug/system_profiler.cpp
+@@ -229,7 +229,7 @@ SystemProfiler::_MaybeNotifyProfilerThreadLocked()
+ 		fWaitingProfilerThread = NULL;
+ 
+ 		SpinLocker _(profilerThread->scheduler_lock);
+-		thread_unblock_locked(profilerThread, B_OK);
++		thread_unblock_locked(profilerThread, B_OK, this);
+ 
+ 		fReentered[cpu] = false;
+ 	}
+@@ -309,7 +309,7 @@ SystemProfiler::~SystemProfiler()
+ 	// inactive.
+ 	InterruptsSpinLocker locker(fLock);
+ 	if (fWaitingProfilerThread != NULL) {
+-		thread_unblock(fWaitingProfilerThread, B_OK);
++		thread_unblock(fWaitingProfilerThread, B_OK, this);
+ 		fWaitingProfilerThread = NULL;
+ 	}
+ 	fProfilingActive = false;
+@@ -577,7 +577,7 @@ SystemProfiler::NextBuffer(size_t bytesRead, uint64* _droppedEvents)
+ 		fWaitingProfilerThread = thread;
+ 
+ 		thread_prepare_to_block(thread, B_CAN_INTERRUPT,
+-			THREAD_BLOCK_TYPE_OTHER, "system profiler buffer");
++			THREAD_BLOCK_TYPE_OTHER_OBJECT, this);
+ 
+ 		locker.Unlock();
+ 
+diff --git a/src/system/kernel/fs/Vnode.cpp b/src/system/kernel/fs/Vnode.cpp
+index cc71aae551..0b57beeacf 100644
+--- a/src/system/kernel/fs/Vnode.cpp
++++ b/src/system/kernel/fs/Vnode.cpp
+@@ -48,8 +48,8 @@ vnode::_WaitForLock()
+ 
+ 	// prepare for waiting
+ 	bucket.waiters.Add(&waiter);
+-	thread_prepare_to_block(waiter.thread, 0, THREAD_BLOCK_TYPE_OTHER,
+-		"vnode lock");
++	thread_prepare_to_block(waiter.thread, 0, THREAD_BLOCK_TYPE_OTHER_OBJECT,
++		waiter.vnode);
+ 
+ 	// start waiting
+ 	bucketLocker.Unlock();
+@@ -88,5 +88,5 @@ vnode::_WakeUpLocker()
+ 		atomic_and(&fFlags, ~kFlagsWaitingLocker);
+ 
+ 	// and wake it up
+-	thread_unblock(waiter->thread, B_OK);
++	thread_unblock(waiter->thread, B_OK, waiter->vnode);
+ }
+diff --git a/src/system/kernel/fs/fifo.cpp b/src/system/kernel/fs/fifo.cpp
+index 33aa60da86..350db9769a 100644
+--- a/src/system/kernel/fs/fifo.cpp
++++ b/src/system/kernel/fs/fifo.cpp
+@@ -103,6 +103,10 @@ public:
+ 	{
+ 		InterruptsSpinLocker _(fLock);
+ 		fNotified = notified;
++		if (notified)
++			thread_get_current_thread()->wait.object = NULL;
++		else
++			thread_get_current_thread()->wait.object = this;
+ 	}
+ 
+ 	void Notify(status_t status = B_OK)
+@@ -112,7 +116,7 @@ public:
+ 
+ 		if (!fNotified) {
+ 			fNotified = true;
+-			thread_unblock(fThread, status);
++			thread_unblock(fThread, status, this);
+ 		}
+ 	}
+ 
+@@ -682,7 +686,7 @@ Inode::WaitForReadRequest(ReadRequest& request)
+ {
+ 	// add the entry to wait on
+ 	thread_prepare_to_block(thread_get_current_thread(), B_CAN_INTERRUPT,
+-		THREAD_BLOCK_TYPE_OTHER, "fifo read request");
++		THREAD_BLOCK_TYPE_OTHER_OBJECT, &request);
+ 
+ 	if (request.IsNotified())
+ 		return B_OK;
+diff --git a/src/system/kernel/locks/lock.cpp b/src/system/kernel/locks/lock.cpp
+index 9ec4466bef..27a194d813 100644
+--- a/src/system/kernel/locks/lock.cpp
++++ b/src/system/kernel/locks/lock.cpp
+@@ -347,7 +347,7 @@ rw_lock_unblock(rw_lock* lock)
+ 		lock->holder = waiter->thread->id;
+ 
+ 		// unblock thread
+-		thread_unblock(waiter->thread, B_OK);
++		thread_unblock(waiter->thread, B_OK, lock);
+ 		waiter->thread = NULL;
+ 
+ 		return RW_LOCK_WRITER_COUNT_BASE;
+@@ -364,7 +364,7 @@ rw_lock_unblock(rw_lock* lock)
+ 		readerCount++;
+ 
+ 		// unblock thread
+-		thread_unblock(waiter->thread, B_OK);
++		thread_unblock(waiter->thread, B_OK, lock);
+ 		waiter->thread = NULL;
+ 	} while ((waiter = lock->waiters) != NULL && !waiter->writer);
+ 
+@@ -438,7 +438,7 @@ rw_lock_destroy(rw_lock* lock)
+ 		lock->waiters = waiter->next;
+ 
+ 		// unblock thread
+-		thread_unblock(waiter->thread, B_ERROR);
++		thread_unblock(waiter->thread, B_ERROR, lock);
+ 	}
+ 
+ 	lock->name = NULL;
+@@ -894,7 +894,7 @@ mutex_destroy(mutex* lock)
+ 		// unblock thread
+ 		Thread* thread = waiter->thread;
+ 		waiter->thread = NULL;
+-		thread_unblock(thread, B_ERROR);
++		thread_unblock(thread, B_ERROR, lock);
+ 	}
+ 
+ 	lock->name = NULL;
+@@ -1069,7 +1069,7 @@ _mutex_unlock(mutex* lock)
+ #endif
+ 
+ 		// unblock thread
+-		thread_unblock(waiter->thread, B_OK);
++		thread_unblock(waiter->thread, B_OK, lock);
+ 	} else {
+ 		// There are no waiters, so mark the lock as released.
+ #if KDEBUG
+diff --git a/src/system/kernel/sem.cpp b/src/system/kernel/sem.cpp
+index 02748a1b19..14346d37b1 100644
+--- a/src/system/kernel/sem.cpp
++++ b/src/system/kernel/sem.cpp
+@@ -331,7 +331,7 @@ uninit_sem_locked(struct sem_entry& sem, char** _name, SpinLocker& locker)
+ 	// free any threads waiting for this semaphore
+ 	while (queued_thread* entry = sem.queue.RemoveHead()) {
+ 		entry->queued = false;
+-		thread_unblock(entry->thread, B_BAD_SEM_ID);
++		thread_unblock(entry->thread, B_BAD_SEM_ID, (void*)(addr_t)sem.id);
+ 	}
+ 
+ 	int32 id = sem.id;
+@@ -622,7 +622,7 @@ remove_thread_from_sem(queued_thread *entry, struct sem_entry *sem)
+ 			if (entry->count > sem->u.used.net_count)
+ 				break;
+ 
+-			thread_unblock_locked(entry->thread, B_OK);
++			thread_unblock_locked(entry->thread, B_OK, (void*)(addr_t)sem->id);
+ 			sem->u.used.net_count -= entry->count;
+ 		} else {
+ 			// The thread is no longer waiting, but still queued, which means
+@@ -950,7 +950,7 @@ release_sem_etc(sem_id id, int32 count, uint32 flags)
+ 				break;
+ 			}
+ 
+-			thread_unblock_locked(entry->thread, unblockStatus);
++			thread_unblock_locked(entry->thread, unblockStatus, (void*)(addr_t)id);
+ 
+ 			int delta = min_c(count, entry->count);
+ 			sSems[slot].u.used.count += delta;
+diff --git a/src/system/kernel/thread.cpp b/src/system/kernel/thread.cpp
+index dcbdf114a4..a7c5b22147 100644
+--- a/src/system/kernel/thread.cpp
++++ b/src/system/kernel/thread.cpp
+@@ -2965,7 +2965,7 @@ static int32
+ thread_block_timeout(timer* timer)
+ {
+ 	Thread* thread = (Thread*)timer->user_data;
+-	thread_unblock(thread, B_TIMED_OUT);
++	thread_unblock(thread, B_TIMED_OUT, NULL);
+ 
+ 	timer->user_data = NULL;
+ 	return B_HANDLED_INTERRUPT;
+@@ -3090,10 +3090,10 @@ thread_block_with_timeout(uint32 timeoutFlags, bigtime_t timeout)
+ 	See there for more information.
+ */
+ void
+-thread_unblock(Thread* thread, status_t status)
++thread_unblock(Thread* thread, status_t status, void* object)
+ {
+ 	InterruptsSpinLocker locker(thread->scheduler_lock);
+-	thread_unblock_locked(thread, status);
++	thread_unblock_locked(thread, status, object);
+ }
+ 
+ 
+@@ -3130,7 +3130,7 @@ user_unblock_thread(thread_id threadID, status_t status)
+ 		// case that this thread is actually blocked on something else.
+ 		if (thread->wait.status > 0
+ 				&& thread->wait.type == THREAD_BLOCK_TYPE_USER) {
+-			thread_unblock_locked(thread, status);
++			thread_unblock_locked(thread, status, thread->user_thread);
+ 		}
+ 	}
+ 	return B_OK;
+@@ -3889,7 +3889,7 @@ _user_block_thread(uint32 flags, bigtime_t timeout)
+ 	//       error.
+ 	#pragma GCC diagnostic push
+ 	#pragma GCC diagnostic ignored "-Wstringop-overflow"
+-	thread_prepare_to_block(thread, flags, THREAD_BLOCK_TYPE_USER, NULL);
++	thread_prepare_to_block(thread, flags, THREAD_BLOCK_TYPE_USER, thread->user_thread);
+ 	#pragma GCC diagnostic pop
+ 
+ 	threadLocker.Unlock();
+diff --git a/src/system/kernel/vm/VMCache.cpp b/src/system/kernel/vm/VMCache.cpp
+index 5f19f77362..1f0b33aece 100644
+--- a/src/system/kernel/vm/VMCache.cpp
++++ b/src/system/kernel/vm/VMCache.cpp
+@@ -1520,7 +1520,7 @@ VMCache::_NotifyPageEvents(vm_page* page, uint32 events)
+ 		if (waiter->page == page && (waiter->events & events) != 0) {
+ 			// remove from list and unblock
+ 			*it = waiter->next;
+-			thread_unblock(waiter->thread, B_OK);
++			thread_unblock(waiter->thread, B_OK, page);
+ 		} else
+ 			it = &waiter->next;
+ 	}
+diff --git a/src/system/kernel/vm/vm_page.cpp b/src/system/kernel/vm/vm_page.cpp
+index 2dbb9468b3..a19cd4b358 100644
+--- a/src/system/kernel/vm/vm_page.cpp
++++ b/src/system/kernel/vm/vm_page.cpp
+@@ -1535,7 +1535,7 @@ wake_up_page_reservation_waiters()
+ 			return;
+ 
+ 		sPageReservationWaiters.Remove(waiter);
+-		thread_unblock(waiter->thread, B_OK);
++		thread_unblock(waiter->thread, B_OK, &sPageReservationWaiters);
+ 	}
+ }
+ 
+@@ -3171,8 +3171,8 @@ reserve_pages(uint32 missing, int priority, bool dontWait)
+ 
+ 		sPageReservationWaiters.InsertBefore(otherWaiter, &waiter);
+ 
+-		thread_prepare_to_block(waiter.thread, 0, THREAD_BLOCK_TYPE_OTHER,
+-			"waiting for pages");
++		thread_prepare_to_block(waiter.thread, 0, THREAD_BLOCK_TYPE_OTHER_OBJECT,
++			&sPageReservationWaiters);
+ 
+ 		if (notifyDaemon)
+ 			sPageDaemonCondition.WakeUp();
+-- 
+2.43.0
+
