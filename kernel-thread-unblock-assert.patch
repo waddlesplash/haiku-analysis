@@ -1,4 +1,4 @@
-From 0b7e32eec59007d4ec23dfcb1431a59291561960 Mon Sep 17 00:00:00 2001
+From d1847783f9460da030c36a7edb4c585dc7fcd87d Mon Sep 17 00:00:00 2001
 From: Augustin Cavalier <waddlesplash@gmail.com>
 Date: Thu, 11 Sep 2025 15:49:24 -0400
 Subject: [PATCH] kernel: Check the wait object in unblock().
@@ -9,20 +9,20 @@ be set to something else.
 This catches "spurious" unblocks much more reliably,
 and at the source.
 ---
- headers/private/kernel/thread.h             | 13 ++++++++++---
+ headers/private/kernel/thread.h             | 19 ++++++++++++++++---
  src/system/kernel/condition_variable.cpp    |  4 ++--
  src/system/kernel/debug/system_profiler.cpp |  6 +++---
  src/system/kernel/fs/Vnode.cpp              |  6 +++---
  src/system/kernel/fs/fifo.cpp               |  8 ++++++--
  src/system/kernel/locks/lock.cpp            | 10 +++++-----
  src/system/kernel/sem.cpp                   |  6 +++---
- src/system/kernel/thread.cpp                | 10 +++++-----
+ src/system/kernel/thread.cpp                | 12 +++++++-----
  src/system/kernel/vm/VMCache.cpp            |  2 +-
  src/system/kernel/vm/vm_page.cpp            |  6 +++---
- 10 files changed, 41 insertions(+), 30 deletions(-)
+ 10 files changed, 49 insertions(+), 30 deletions(-)
 
 diff --git a/headers/private/kernel/thread.h b/headers/private/kernel/thread.h
-index 6e1f03b4e7..70cf07d323 100644
+index 6e1f03b4e7..ec290e897e 100644
 --- a/headers/private/kernel/thread.h
 +++ b/headers/private/kernel/thread.h
 @@ -135,7 +135,7 @@ status_t deselect_thread(int32 object, struct select_info *info, bool kernel);
@@ -34,15 +34,7 @@ index 6e1f03b4e7..70cf07d323 100644
  
  // used in syscalls.c
  status_t _user_set_thread_priority(thread_id thread, int32 newPriority);
-@@ -339,6 +339,7 @@ thread_prepare_to_block(Thread* thread, uint32 flags, uint32 type,
- 
- /*!	Unblocks the specified blocked thread.
- 
-+
- 	If the thread is no longer waiting (e.g. because thread_unblock_locked() has
- 	already been called in the meantime), this function does not have any
- 	effect.
-@@ -351,8 +352,14 @@ thread_prepare_to_block(Thread* thread, uint32 flags, uint32 type,
+@@ -351,8 +351,21 @@ thread_prepare_to_block(Thread* thread, uint32 flags, uint32 type,
  		call to thread_block_locked() will return.
  */
  static inline void
@@ -53,12 +45,19 @@ index 6e1f03b4e7..70cf07d323 100644
 +		if (thread->wait.object != object)
 +			panic("thread_unblock_locked: object mismatch, thread %p, unblock object %p", thread, object);
 +		thread->wait.object = NULL;
++	} else if (thread->wait.object != NULL) {
++		if (status != B_TIMED_OUT && status != B_INTERRUPTED)
++			panic("thread_unblock_locked: object/status mismatch, thread %p", thread);
++		if (status == B_TIMED_OUT && (thread->wait.flags & (B_RELATIVE_TIMEOUT | B_ABSOLUTE_TIMEOUT)) == 0)
++			panic("thread_unblock_locked: unblocking illegally");
++		if (status == B_INTERRUPTED && (thread->wait.flags & (B_CAN_INTERRUPT | B_KILL_CAN_INTERRUPT)) == 0)
++			panic("thread_unblock_locked: unblocking illegally");
 +	}
 +
  	if (atomic_test_and_set(&thread->wait.status, status, 1) != 1)
  		return;
  
-@@ -391,7 +398,7 @@ thread_interrupt(Thread* thread, bool kill)
+@@ -391,7 +404,7 @@ thread_interrupt(Thread* thread, bool kill)
  	if (thread_is_blocked(thread)) {
  		if ((thread->wait.flags & B_CAN_INTERRUPT) != 0
  			|| (kill && (thread->wait.flags & B_KILL_CAN_INTERRUPT) != 0)) {
@@ -256,7 +255,7 @@ index 02748a1b19..14346d37b1 100644
  			int delta = min_c(count, entry->count);
  			sSems[slot].u.used.count += delta;
 diff --git a/src/system/kernel/thread.cpp b/src/system/kernel/thread.cpp
-index dcbdf114a4..a7c5b22147 100644
+index dcbdf114a4..3dc1ab786e 100644
 --- a/src/system/kernel/thread.cpp
 +++ b/src/system/kernel/thread.cpp
 @@ -2965,7 +2965,7 @@ static int32
@@ -268,7 +267,16 @@ index dcbdf114a4..a7c5b22147 100644
  
  	timer->user_data = NULL;
  	return B_HANDLED_INTERRUPT;
-@@ -3090,10 +3090,10 @@ thread_block_with_timeout(uint32 timeoutFlags, bigtime_t timeout)
+@@ -3056,6 +3056,8 @@ thread_block_with_timeout(uint32 timeoutFlags, bigtime_t timeout)
+ 		&& timeout != B_INFINITE_TIMEOUT;
+ 
+ 	if (useTimer) {
++		thread->wait.flags |= timeoutFlags;
++
+ 		// Timer flags: absolute/relative.
+ 		uint32 timerFlags;
+ 		if ((timeoutFlags & B_RELATIVE_TIMEOUT) != 0) {
+@@ -3090,10 +3092,10 @@ thread_block_with_timeout(uint32 timeoutFlags, bigtime_t timeout)
  	See there for more information.
  */
  void
@@ -281,7 +289,7 @@ index dcbdf114a4..a7c5b22147 100644
  }
  
  
-@@ -3130,7 +3130,7 @@ user_unblock_thread(thread_id threadID, status_t status)
+@@ -3130,7 +3132,7 @@ user_unblock_thread(thread_id threadID, status_t status)
  		// case that this thread is actually blocked on something else.
  		if (thread->wait.status > 0
  				&& thread->wait.type == THREAD_BLOCK_TYPE_USER) {
@@ -290,7 +298,7 @@ index dcbdf114a4..a7c5b22147 100644
  		}
  	}
  	return B_OK;
-@@ -3889,7 +3889,7 @@ _user_block_thread(uint32 flags, bigtime_t timeout)
+@@ -3889,7 +3891,7 @@ _user_block_thread(uint32 flags, bigtime_t timeout)
  	//       error.
  	#pragma GCC diagnostic push
  	#pragma GCC diagnostic ignored "-Wstringop-overflow"
