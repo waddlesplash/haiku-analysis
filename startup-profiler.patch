@@ -1,0 +1,28 @@
+diff --git a/src/kits/tracker/PoseView.cpp b/src/kits/tracker/PoseView.cpp
+index 3734df9f49..b54ff39610 100644
+--- a/src/kits/tracker/PoseView.cpp
++++ b/src/kits/tracker/PoseView.cpp
+@@ -965,6 +965,8 @@ BPoseView::ScrollTo(BPoint where)
+ void
+ BPoseView::AttachedToWindow()
+ {
++	system("kill -2 profile");
++
+ 	fIsDesktop = dynamic_cast<BDeskWindow*>(Window()) != NULL;
+ 	if (fIsDesktop)
+ 		AddFilter(new TPoseViewFilter(this));
+diff --git a/src/servers/launch/LaunchDaemon.cpp b/src/servers/launch/LaunchDaemon.cpp
+index 878a1d5d91..d276561ee1 100644
+--- a/src/servers/launch/LaunchDaemon.cpp
++++ b/src/servers/launch/LaunchDaemon.cpp
+@@ -2139,6 +2139,10 @@ main(int argc, char* argv[])
+ 		return EXIT_FAILURE;
+ 	}
+ 
++	pid_t pid;
++	const char* const args[] = { "/bin/sh", "-c", "/bin/profile -a -f -k >/boot/home/Desktop/profile.out", NULL };
++	posix_spawn(&pid, args[0], NULL, NULL, (char*const*)args, NULL);
++
+ #ifndef TEST_MODE
+ 	// Make stdin/out/err available
+ 	open_stdio(STDIN_FILENO, O_RDONLY);
