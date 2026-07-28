@@ -1,0 +1,467 @@
+From 497a01772b06f36130b5a7f57f2f0cc0b963edf5 Mon Sep 17 00:00:00 2001
+From: Augustin Cavalier <waddlesplash@gmail.com>
+Date: Tue, 28 Jul 2026 13:11:55 -0400
+Subject: [PATCH] kernel: Various checks for memcpy()s into the physical map
+ region.
+
+ * raw memcpy() should never write to kernel physical map area directly
+ * check state of pages being written to
+ * check that page table pages aren't written to (or otherwise ACCESS'ed
+   outside of page table routines)
+---
+ headers/private/kernel/string.h               |  2 +-
+ .../packagefs/package/CachedDataReader.cpp    |  4 ++
+ .../x86/paging/64bit/X86PagingMethod64Bit.cpp | 16 +++--
+ .../paging/64bit/X86VMTranslationMap64Bit.cpp | 19 +++--
+ .../paging/x86_physical_page_mapper_mapped.h  | 27 ++++++-
+ .../kernel/device_manager/IORequest.cpp       | 35 +++++++++
+ src/system/kernel/vm/vm.cpp                   | 71 +++++++++++++++++++
+ .../posix/string/arch/x86_64/memcpy.cpp       |  8 +++
+ 8 files changed, 172 insertions(+), 10 deletions(-)
+
+diff --git a/headers/private/kernel/string.h b/headers/private/kernel/string.h
+index f04596c6e9..3d5664ab3e 100644
+--- a/headers/private/kernel/string.h
++++ b/headers/private/kernel/string.h
+@@ -11,7 +11,7 @@
+ 
+ #if defined(__GNUC__) && __GNUC__ >= 4
+ #define memset(DEST, V, LEN)	__builtin_memset((DEST), (V), (LEN))
+-#define memcpy(DEST, SRC, LEN)	__builtin_memcpy((DEST), (SRC), (LEN))
++//#define memcpy(DEST, SRC, LEN)	__builtin_memcpy((DEST), (SRC), (LEN))
+ #define memmove(DEST, SRC, LEN)	__builtin_memmove((DEST), (SRC), (LEN))
+ #define memcmp(B1, B2, LEN)		__builtin_memcmp((B1), (B2), (LEN))
+ #endif
+diff --git a/src/add-ons/kernel/file_systems/packagefs/package/CachedDataReader.cpp b/src/add-ons/kernel/file_systems/packagefs/package/CachedDataReader.cpp
+index d2f26b68e9..dce1589120 100644
+--- a/src/add-ons/kernel/file_systems/packagefs/package/CachedDataReader.cpp
++++ b/src/add-ons/kernel/file_systems/packagefs/package/CachedDataReader.cpp
+@@ -235,6 +235,8 @@ CachedDataReader::_ReadCacheLine(off_t lineOffset, size_t lineSize,
+ 			if (pages[index] == NULL) {
+ 				pages[index] = vm_page_allocate_page(&reservation,
+ 					PAGE_STATE_UNUSED);
++				pages[index]->busy = true;
++				pages[index]->busy_io = true;
+ 				DEBUG_PAGE_ACCESS_END(pages[index]);
+ 			} else {
+ 				cacheLocker.Lock();
+@@ -339,6 +341,8 @@ CachedDataReader::_CachePages(vm_page** pages, size_t firstPage,
+ 
+ 		DEBUG_PAGE_ACCESS_START(page);
+ 		vm_page_set_state(page, PAGE_STATE_CACHED);
++		page->busy = false;
++		page->busy_io = false;
+ 		DEBUG_PAGE_ACCESS_END(page);
+ 	}
+ }
+diff --git a/src/system/kernel/arch/x86/paging/64bit/X86PagingMethod64Bit.cpp b/src/system/kernel/arch/x86/paging/64bit/X86PagingMethod64Bit.cpp
+index 06651f9373..55690d1dcd 100644
+--- a/src/system/kernel/arch/x86/paging/64bit/X86PagingMethod64Bit.cpp
++++ b/src/system/kernel/arch/x86/paging/64bit/X86PagingMethod64Bit.cpp
+@@ -240,7 +240,9 @@ X86PagingMethod64Bit::PageDirectoryForAddress(uint64* virtualPMLTop,
+ 			vm_page* page = vm_page_allocate_page(reservation,
+ 				PAGE_STATE_WIRED | VM_PAGE_ALLOC_CLEAR);
+ 
+-			DEBUG_PAGE_ACCESS_END(page);
++			page->accessing_thread = 1;
++			page->busy = true;
++			//DEBUG_PAGE_ACCESS_END(page);
+ 
+ 			phys_addr_t physicalPDPT
+ 				= (phys_addr_t)page->physical_page_number * B_PAGE_SIZE;
+@@ -271,7 +273,9 @@ X86PagingMethod64Bit::PageDirectoryForAddress(uint64* virtualPMLTop,
+ 		vm_page* page = vm_page_allocate_page(reservation,
+ 			PAGE_STATE_WIRED | VM_PAGE_ALLOC_CLEAR);
+ 
+-		DEBUG_PAGE_ACCESS_END(page);
++		page->accessing_thread = 1;
++		page->busy = true;
++		//DEBUG_PAGE_ACCESS_END(page);
+ 
+ 		phys_addr_t physicalPDPT
+ 			= (phys_addr_t)page->physical_page_number * B_PAGE_SIZE;
+@@ -301,7 +305,9 @@ X86PagingMethod64Bit::PageDirectoryForAddress(uint64* virtualPMLTop,
+ 		vm_page* page = vm_page_allocate_page(reservation,
+ 			PAGE_STATE_WIRED | VM_PAGE_ALLOC_CLEAR);
+ 
+-		DEBUG_PAGE_ACCESS_END(page);
++		page->accessing_thread = 1;
++		page->busy = true;
++		//DEBUG_PAGE_ACCESS_END(page);
+ 
+ 		phys_addr_t physicalPageDir
+ 			= (phys_addr_t)page->physical_page_number * B_PAGE_SIZE;
+@@ -364,7 +370,9 @@ X86PagingMethod64Bit::PageTableForAddress(uint64* virtualPMLTop,
+ 		vm_page* page = vm_page_allocate_page(reservation,
+ 			PAGE_STATE_WIRED | VM_PAGE_ALLOC_CLEAR);
+ 
+-		DEBUG_PAGE_ACCESS_END(page);
++		page->accessing_thread = 1;
++		page->busy = true;
++		//DEBUG_PAGE_ACCESS_END(page);
+ 
+ 		phys_addr_t physicalPageTable
+ 			= (phys_addr_t)page->physical_page_number * B_PAGE_SIZE;
+diff --git a/src/system/kernel/arch/x86/paging/64bit/X86VMTranslationMap64Bit.cpp b/src/system/kernel/arch/x86/paging/64bit/X86VMTranslationMap64Bit.cpp
+index 4f918e48ff..223a6ba225 100644
+--- a/src/system/kernel/arch/x86/paging/64bit/X86VMTranslationMap64Bit.cpp
++++ b/src/system/kernel/arch/x86/paging/64bit/X86VMTranslationMap64Bit.cpp
+@@ -101,7 +101,8 @@ X86VMTranslationMap64Bit::~X86VMTranslationMap64Bit()
+ 							B_PRIxPHYSADDR "\n", i, j, k, address);
+ 					}
+ 
+-					DEBUG_PAGE_ACCESS_START(page);
++					ASSERT(page->accessing_thread == 1);
++					DEBUG_PAGE_ACCESS_TRANSFER(page, page->accessing_thread);
+ 					vm_page_free_etc(NULL, page, &reservation);
+ 				}
+ 
+@@ -112,7 +113,8 @@ X86VMTranslationMap64Bit::~X86VMTranslationMap64Bit()
+ 						B_PRIxPHYSADDR "\n", i, j, address);
+ 				}
+ 
+-				DEBUG_PAGE_ACCESS_START(page);
++				ASSERT(page->accessing_thread == 1);
++				DEBUG_PAGE_ACCESS_TRANSFER(page, page->accessing_thread);
+ 				vm_page_free_etc(NULL, page, &reservation);
+ 			}
+ 
+@@ -123,7 +125,8 @@ X86VMTranslationMap64Bit::~X86VMTranslationMap64Bit()
+ 					address);
+ 			}
+ 
+-			DEBUG_PAGE_ACCESS_START(page);
++			ASSERT(page->accessing_thread == 1);
++			DEBUG_PAGE_ACCESS_TRANSFER(page, page->accessing_thread);
+ 			vm_page_free_etc(NULL, page, &reservation);
+ 		}
+ 
+@@ -135,7 +138,8 @@ X86VMTranslationMap64Bit::~X86VMTranslationMap64Bit()
+ 					address);
+ 			}
+ 
+-			DEBUG_PAGE_ACCESS_START(page);
++			ASSERT(page->accessing_thread == 1);
++			DEBUG_PAGE_ACCESS_TRANSFER(page, page->accessing_thread);
+ 			vm_page_free_etc(NULL, page, &reservation);
+ 		} else {
+ 			break;
+@@ -241,6 +245,13 @@ X86VMTranslationMap64Bit::Map(addr_t virtualAddress, phys_addr_t physicalAddress
+ 		")\n", virtualAddress, physicalAddress);
+ 	ASSERT_LOCKED_RECURSIVE(&fLock);
+ 
++#if 1
++	vm_page* page = vm_lookup_page(physicalAddress / B_PAGE_SIZE);
++	if (!gKernelStartup && page != NULL && page->State() != PAGE_STATE_UNUSED
++			&& !(page->Cache() != NULL && page->Cache()->type == CACHE_TYPE_VNODE))
++		DEBUG_PAGE_ACCESS_CHECK(page);
++#endif
++
+ 	ThreadCPUPinner pinner(thread_get_current_thread());
+ 
+ 	// Look up the page table for the virtual address, allocating new tables
+diff --git a/src/system/kernel/arch/x86/paging/x86_physical_page_mapper_mapped.h b/src/system/kernel/arch/x86/paging/x86_physical_page_mapper_mapped.h
+index 6e5339edb6..b5a7c8bb3c 100644
+--- a/src/system/kernel/arch/x86/paging/x86_physical_page_mapper_mapped.h
++++ b/src/system/kernel/arch/x86/paging/x86_physical_page_mapper_mapped.h
+@@ -15,6 +15,8 @@
+ #include <vm/vm_types.h>
+ #include <vm/VMAddressSpace.h>
+ 
++#include <arch/user_memory.h>
++
+ #include "paging/x86_physical_page_mapper.h"
+ #include "paging/X86PagingStructures.h"
+ #include "paging/X86VMTranslationMap.h"
+@@ -148,6 +150,28 @@ X86PhysicalPageMapper::MemsetPhysical(phys_addr_t address, int value,
+ }
+ 
+ 
++#define memcpy local_memcpy
++static void*
++memcpy(void* dest, const void* source, size_t count)
++{
++	if (count == 0 || dest == source)
++		return dest;
++
++	uint8_t* d = (uint8_t*)dest;
++	const uint8_t* s = (const uint8_t*)source;
++
++	while (count > 0) {
++		*d = *s;
++		d++;
++		s++;
++		count--;
++	}
++
++	return dest;
++}
++
++extern status_t		user_memcpy_physical(void *to, const void *from, size_t size);
++
+ inline status_t
+ X86PhysicalPageMapper::MemcpyFromPhysical(void* to, phys_addr_t _from,
+ 	size_t length, bool user)
+@@ -176,7 +200,7 @@ X86PhysicalPageMapper::MemcpyToPhysical(phys_addr_t _to, const void* from,
+ 	auto to = (void*)(_to + KERNEL_PMAP_BASE);
+ 
+ 	if (user)
+-		return user_memcpy(to, from, length);
++		return user_memcpy_physical(to, from, length);
+ 
+ 	memcpy(to, from, length);
+ 	return B_OK;
+@@ -191,6 +215,7 @@ X86PhysicalPageMapper::MemcpyPhysicalPage(phys_addr_t to,
+ 		B_PAGE_SIZE);
+ }
+ 
++#undef memcpy
+ 
+ status_t mapped_physical_page_ops_init(kernel_args* args,
+ 	X86PhysicalPageMapper*& _pageMapper,
+diff --git a/src/system/kernel/device_manager/IORequest.cpp b/src/system/kernel/device_manager/IORequest.cpp
+index 74bd3032a3..f8803b0b5a 100644
+--- a/src/system/kernel/device_manager/IORequest.cpp
++++ b/src/system/kernel/device_manager/IORequest.cpp
+@@ -20,6 +20,8 @@
+ #include <vm/VMAddressSpace.h>
+ 
+ #include "dma_resources.h"
++#include <vm/vm_page.h>
++#include <vm/VMCache.h>
+ 
+ 
+ //#define TRACE_IO_REQUEST
+@@ -45,6 +47,12 @@ struct virtual_vec_cookie {
+ 	void*			physical_page_handle;
+ 	addr_t			virtual_address;
+ 
++	vm_page* debug_page;
++	void* debug_cache;
++	int32 debug_state;
++	page_num_t debug_offset;
++	bool debug_mapped;
++
+ 	virtual_vec_cookie()
+ 		:
+ 		vec_index(0),
+@@ -60,6 +68,13 @@ struct virtual_vec_cookie {
+ 		if (virtual_address != (addr_t)-1) {
+ 			vm_put_physical_page(virtual_address, physical_page_handle);
+ 			virtual_address = (addr_t)-1;
++
++			ASSERT(debug_cache == debug_page->Cache());
++			ASSERT(debug_state == debug_page->State());
++			ASSERT(debug_page->busy);
++			ASSERT(debug_page->cache_offset == debug_offset);
++			ASSERT(debug_mapped == !debug_page->mappings.IsEmpty());
++			ASSERT(debug_page->accessing_thread == -1);
+ 		}
+ 	}
+ };
+@@ -164,6 +179,7 @@ IOBuffer::GetNextVirtualVec(void*& _cookie, iovec& vector)
+ 		return B_OK;
+ 	}
+ 
++#if 0
+ 	if (cookie->vec_index == 0
+ 			&& (fVecCount > 1 || fVecs[0].length > B_PAGE_SIZE)) {
+ 		void* mappedAddress;
+@@ -184,6 +200,7 @@ IOBuffer::GetNextVirtualVec(void*& _cookie, iovec& vector)
+ 		} else
+ 			ktrace_printf("failed to map area: %s\n", strerror(cookie->mapped_area));
+ 	}
++#endif
+ 
+ 	// fallback to page wise mapping
+ 	const generic_io_vec& currentVec = fVecs[cookie->vec_index];
+@@ -200,15 +217,31 @@ IOBuffer::GetNextVirtualVec(void*& _cookie, iovec& vector)
+ 	generic_size_t length = min_c(currentVec.length - cookie->vec_offset,
+ 		B_PAGE_SIZE - pageOffset);
+ 
++	if (((address + length) % B_PAGE_SIZE) > 0x7e0 && ((address + length) % B_PAGE_SIZE) <= 0x7f0)
++		panic("here!");
++
+ 	vector.iov_base = (void*)(cookie->virtual_address + pageOffset);
+ 	vector.iov_len = length;
+ 
++	//dprintf("IOBuffer address: 0x%lx + 0x%lx [0x%lx] ", currentVec.base, cookie->vec_offset, length);
++
+ 	cookie->vec_offset += length;
+ 	if (cookie->vec_offset >= currentVec.length) {
+ 		cookie->vec_index++;
+ 		cookie->vec_offset = 0;
+ 	}
+ 
++	cookie->debug_page = vm_lookup_page(address / B_PAGE_SIZE);
++	cookie->debug_cache = cookie->debug_page->Cache();
++	cookie->debug_state = cookie->debug_page->State();
++	cookie->debug_offset = cookie->debug_page->cache_offset;
++	cookie->debug_mapped = !cookie->debug_page->mappings.IsEmpty();
++	ASSERT(cookie->debug_page->busy);
++	ASSERT(cookie->debug_page->accessing_thread == -1);
++	ASSERT(cookie->debug_state != PAGE_STATE_FREE && cookie->debug_state != PAGE_STATE_CLEAR);
++	if (cookie->debug_cache != NULL && cookie->debug_page->Cache()->areas.First() != NULL)
++		ASSERT(cookie->debug_page->Cache()->areas.First()->address_space != VMAddressSpace::Kernel());
++
+ 	return B_OK;
+ }
+ 
+@@ -1338,6 +1371,8 @@ IORequest::_CopySimple(void* bounceBuffer, generic_addr_t external, size_t size,
+ 	}
+ 	if (copyIn)
+ 		memcpy(bounceBuffer, (void*)(addr_t)external, size);
++	else if (external > KERNEL_PMAP_BASE && external < (KERNEL_PMAP_BASE + KERNEL_PMAP_SIZE))
++		vm_memcpy_to_physical(external - KERNEL_PMAP_BASE, bounceBuffer, size, false);
+ 	else
+ 		memcpy((void*)(addr_t)external, bounceBuffer, size);
+ 	return B_OK;
+diff --git a/src/system/kernel/vm/vm.cpp b/src/system/kernel/vm/vm.cpp
+index 31883733c6..efb80065d0 100644
+--- a/src/system/kernel/vm/vm.cpp
++++ b/src/system/kernel/vm/vm.cpp
+@@ -4795,9 +4795,41 @@ vm_resize_area(area_id areaID, size_t newSize, bool kernel)
+ }
+ 
+ 
++static void
++check_physical_access(phys_addr_t physicalAddress)
++{
++	if (debug_debugger_running())
++		return;
++	vm_page* page = vm_lookup_page(physicalAddress / B_PAGE_SIZE);
++	if (page != NULL) {
++		if (page->accessing_thread == thread_get_current_thread_id())
++			return;
++
++		ASSERT(page->accessing_thread == -1);
++		ASSERT(page->State() != PAGE_STATE_FREE && page->State() != PAGE_STATE_CLEAR);
++		ASSERT(
++			//(page->busy && (addr_t)address >= KERNEL_PMAP_BASE && (addr_t)address <= (KERNEL_PMAP_BASE+KERNEL_PMAP_SIZE)) ||
++			(page->busy && page->Cache() != NULL && (page->Cache()->type == CACHE_TYPE_VNODE || page->Cache()->type == CACHE_TYPE_NULL)) ||
++			(page->WiredCount() || page->State() == PAGE_STATE_WIRED));
++	}
++}
++
++
++static void
++check_physical_access_range(phys_addr_t _address, phys_size_t length)
++{
++	phys_addr_t address = ROUNDDOWN(_address, B_PAGE_SIZE);
++	length += _address - address;
++	for (phys_size_t i = 0; i < length; i += B_PAGE_SIZE)
++		check_physical_access(address + i);
++}
++
++
+ status_t
+ vm_memset_physical(phys_addr_t address, int value, phys_size_t length)
+ {
++	if (value != 0)
++		check_physical_access_range(address, length);
+ 	return sPhysicalPageMapper->MemsetPhysical(address, value, length);
+ }
+ 
+@@ -4805,6 +4837,8 @@ vm_memset_physical(phys_addr_t address, int value, phys_size_t length)
+ status_t
+ vm_memcpy_from_physical(void* to, phys_addr_t from, size_t length, bool user)
+ {
++	ASSERT(!((addr_t)to >= KERNEL_PMAP_BASE && ((addr_t)to+length) < (KERNEL_PMAP_BASE+KERNEL_PMAP_SIZE)));
++	check_physical_access_range(from, length);
+ 	return sPhysicalPageMapper->MemcpyFromPhysical(to, from, length, user);
+ }
+ 
+@@ -4813,6 +4847,8 @@ status_t
+ vm_memcpy_to_physical(phys_addr_t to, const void* _from, size_t length,
+ 	bool user)
+ {
++	//ASSERT(!((addr_t)_from >= KERNEL_PMAP_BASE && ((addr_t)_from+length) < (KERNEL_PMAP_BASE+KERNEL_PMAP_SIZE)));
++	check_physical_access_range(to, length);
+ 	return sPhysicalPageMapper->MemcpyToPhysical(to, _from, length, user);
+ }
+ 
+@@ -4820,6 +4856,7 @@ vm_memcpy_to_physical(phys_addr_t to, const void* _from, size_t length,
+ void
+ vm_memcpy_physical_page(phys_addr_t to, phys_addr_t from)
+ {
++	check_physical_access(to);
+ 	return sPhysicalPageMapper->MemcpyPhysicalPage(to, from);
+ }
+ 
+@@ -4856,6 +4893,38 @@ user_memcpy(void* to, const void* from, size_t size)
+ }
+ 
+ 
++#define memcpy local_memcpy
++static void*
++memcpy(void* dest, const void* source, size_t count)
++{
++	if (count == 0 || dest == source)
++		return dest;
++
++	uint8_t* d = (uint8_t*)dest;
++	const uint8_t* s = (const uint8_t*)source;
++
++	while (count > 0) {
++		*d = *s;
++		d++;
++		s++;
++		count--;
++	}
++
++	return dest;
++}
++
++status_t
++user_memcpy_physical(void* to, const void* from, size_t size)
++{
++	arch_cpu_enable_user_access();
++	memcpy(to, from, size);
++	arch_cpu_disable_user_access();
++	return B_OK;
++}
++
++#undef memcpy
++
++
+ /*!	\brief Copies at most (\a size - 1) characters from the string in \a from to
+ 	the string in \a to, NULL-terminating the result.
+ 
+@@ -5423,6 +5492,8 @@ get_memory_map_etc(team_id team, const void* address, size_t numBytes,
+ 			return B_BAD_ADDRESS;
+ 		}
+ 
++		check_physical_access(physicalAddress);
++
+ 		addr_t bytes = min_c(numBytes, B_PAGE_SIZE - pageOffset);
+ 		if (pageOffset > 0) {
+ 			physicalAddress += pageOffset;
+diff --git a/src/system/libroot/posix/string/arch/x86_64/memcpy.cpp b/src/system/libroot/posix/string/arch/x86_64/memcpy.cpp
+index 3e51e38167..0f2bd1a5e5 100644
+--- a/src/system/libroot/posix/string/arch/x86_64/memcpy.cpp
++++ b/src/system/libroot/posix/string/arch/x86_64/memcpy.cpp
+@@ -11,6 +11,11 @@
+ 
+ #include <emmintrin.h>
+ 
++#ifdef _KERNEL_MODE
++#include <kernel.h>
++#include <debug.h>
++#endif
++
+ 
+ namespace {
+ 
+@@ -141,6 +146,9 @@ memcpy_sse(uint8_t* destination, const uint8_t* source, size_t length)
+ extern "C" void*
+ memcpy(void* destination, const void* source, size_t length)
+ {
++#ifdef _KERNEL_MODE
++	ASSERT(!((addr_t)destination >= KERNEL_PMAP_BASE && ((addr_t)destination+length) < (KERNEL_PMAP_BASE+KERNEL_PMAP_SIZE)));
++#endif
+ 	auto to = static_cast<uint8_t*>(destination);
+ 	auto from = static_cast<const uint8_t*>(source);
+ 	if (length <= 16) {
+-- 
+2.43.0
+
